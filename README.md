@@ -13,7 +13,7 @@ Team: Ishita Kaushik (2024UMA0210), Kovid Baid (2024UMA0214), Saswade Aditya Nac
 | --- | --- | --- |
 | 1. Set up | Repository, Docker database, rebuild script, tests on every push | Done |
 | 2. Schema | 42 tables, keys and checks, 16 views, reference data, schema tests | Done |
-| 3. Rules | All 29 rules and 4 participation constraints enforced; 45 triggers ([docs/rules.md](docs/rules.md)) | Done |
+| 3. Rules | All 29 rules and 4 participation constraints enforced; 46 triggers ([docs/rules.md](docs/rules.md)) | Done |
 | 4. Functions | 12 transactional functions (5 for the demo, 7 in reserve) | Next |
 | 5. Data | Seed stages 2 to 5: people, teams, a season, the demo starting point | |
 | 6. Demo | Streamlit app for the live presentation | |
@@ -72,7 +72,7 @@ tests/
   conftest.py         fresh database per test run; each test rolled back afterwards
   test_schema.py      the schema and its declarative rules
   test_rules.py       one test per way of breaking each trigger-enforced rule
-  test_concurrency.py two sessions racing for the last tournament place (uses its own database)
+  test_concurrency.py two sessions racing on rules 26 and 27 (uses its own database)
 docs/
   rules.md            each of the 29 business rules: how and when it is enforced, and its tests
   deviation_log.md    every difference from the mid-semester report, with the reason

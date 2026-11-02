@@ -488,6 +488,64 @@ END $$;
 CREATE CONSTRAINT TRIGGER rules_match_at_commit AFTER INSERT OR UPDATE ON match
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION trg_match_at_commit();
 
+-- match: rule 3, second part (report Section 4.5): "when a match ends, its winner and
+-- loser take their to_slot in the next match". This trigger WRITES rather than checks.
+-- It runs on every update of a completed match, so a corrected result (resolve_dispute)
+-- moves the right teams on, as long as the next match has not started. It does nothing
+-- when the teams are already in place, so running it twice changes nothing.
+CREATE FUNCTION advance_bracket() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    v_winner  integer;
+    v_loser   integer;
+    v_current integer;
+    t         record;
+BEGIN
+    SELECT team_id INTO v_winner FROM v_match_winner WHERE match_id = NEW.match_id;
+    IF v_winner IS NULL THEN
+        IF NEW.winner_to_match_id IS NOT NULL OR NEW.loser_to_match_id IS NOT NULL THEN
+            PERFORM raise_rule(3, format(
+                'match %s is completed without a winner, so no team can move on', NEW.match_id));
+        END IF;
+        RETURN NULL;
+    END IF;
+    SELECT team_id INTO v_loser FROM competes_in WHERE match_id = NEW.match_id AND team_id <> v_winner;
+
+    -- First pass: empty any target slot that holds the wrong team of this match (a
+    -- corrected result). A slot holding some other team means a broken bracket.
+    FOR t IN SELECT * FROM (VALUES (NEW.winner_to_match_id, NEW.winner_to_slot, v_winner),
+                                   (NEW.loser_to_match_id,  NEW.loser_to_slot,  v_loser))
+                          AS x(match_id, slot, team_id)
+             WHERE x.match_id IS NOT NULL AND x.team_id IS NOT NULL LOOP
+        SELECT team_id INTO v_current FROM competes_in WHERE match_id = t.match_id AND slot = t.slot;
+        IF FOUND AND v_current <> t.team_id THEN
+            IF v_current NOT IN (v_winner, v_loser) THEN
+                PERFORM raise_rule(3, format('slot %s of match %s already holds %s',
+                    t.slot, t.match_id, team_label(v_current)));
+            END IF;
+            IF EXISTS (SELECT 1 FROM match m WHERE m.match_id = t.match_id
+                       AND (m.status IN ('live', 'completed') OR m.result_type IS NOT NULL)) THEN
+                PERFORM raise_rule(3, format(
+                    'match %s has started, so the team that moved into it can no longer change', t.match_id));
+            END IF;
+            DELETE FROM competes_in WHERE match_id = t.match_id AND slot = t.slot;
+        END IF;
+    END LOOP;
+
+    -- Second pass: place the winner and the loser.
+    FOR t IN SELECT * FROM (VALUES (NEW.winner_to_match_id, NEW.winner_to_slot, v_winner),
+                                   (NEW.loser_to_match_id,  NEW.loser_to_slot,  v_loser))
+                          AS x(match_id, slot, team_id)
+             WHERE x.match_id IS NOT NULL AND x.team_id IS NOT NULL LOOP
+        IF NOT EXISTS (SELECT 1 FROM competes_in WHERE match_id = t.match_id AND slot = t.slot) THEN
+            INSERT INTO competes_in (match_id, team_id, slot) VALUES (t.match_id, t.team_id, t.slot);
+        END IF;
+    END LOOP;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER rules_match_advance AFTER UPDATE ON match
+    FOR EACH ROW WHEN (NEW.status = 'completed')
+    EXECUTE FUNCTION advance_bracket();
+
 -- competes_in: rule 2
 CREATE FUNCTION trg_competes_in() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

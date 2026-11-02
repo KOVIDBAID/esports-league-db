@@ -67,3 +67,45 @@ def test_r27_two_sessions_cannot_both_take_the_last_place(scratch_cfg):
 
     with rebuild.connect(scratch_cfg) as check:
         assert one(check, "SELECT count(*) FROM participates_in WHERE tournament_id = %s", (t,)) == 3
+
+
+def test_r26_a_registration_cannot_vanish_under_a_new_entry(scratch_cfg):
+    """Session 1 deletes a team's season registration while session 2 enters the team in
+    a season tournament. check_r26 locks the registration it relies on (FOR KEY SHARE, as a
+    foreign key would), so session 2 waits, sees the registration gone, and is refused."""
+    from conftest import new_league
+
+    with rebuild.connect(scratch_cfg) as setup:
+        league = new_league(setup)
+        cup = new_cup(setup, "Season Cup", league=league)
+        late = new_team(setup, "Late Entry")
+        setup.execute("INSERT INTO registered_in (team_id, league_id, season_year) VALUES (%s, %s, 2026)",
+                      (late, league["league_id"]))
+        setup.commit()
+
+    first = rebuild.connect(scratch_cfg)
+    second = rebuild.connect(scratch_cfg)
+    outcome = {}
+
+    def second_session():
+        try:
+            second.execute("INSERT INTO participates_in (team_id, tournament_id) VALUES (%s, %s)",
+                           (late, cup["tournament_id"]))
+            second.commit()
+            outcome["result"] = "committed"
+        except psycopg.Error as exc:
+            second.rollback()
+            outcome["result"] = exc.sqlstate
+
+    try:
+        first.execute("DELETE FROM registered_in WHERE team_id = %s", (late,))   # no entries yet: allowed
+        worker = threading.Thread(target=second_session)
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive(), "session 2 should wait for the registration row"
+        first.commit()
+        worker.join(timeout=10)
+        assert outcome["result"] == "R0026"
+    finally:
+        first.close()
+        second.close()

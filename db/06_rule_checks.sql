@@ -22,6 +22,15 @@
 --   coaching roles  head coach, assistant coach
 --   started match   status is live or completed, or result_type is set
 --   mode codes      HP, S&D, CTL, OVR (game_mode.abbreviation in seed/reference)
+--
+-- Locks, so the checks also hold when two sessions write at once
+--   * A check that needs a row to EXIST locks it the way a foreign key does:
+--     FOR KEY SHARE (or FOR SHARE when a non-key column matters, such as a stint's
+--     end_date). Another session can then not delete or change that row until this
+--     transaction ends; if it already did, the lookup finds nothing and the rule fails.
+--   * A check that COUNTS rows (rules 3, 14, 27) first locks the parent row with
+--     FOR NO KEY UPDATE, so a second session waits and then counts again.
+--   * Neither lock blocks the KEY SHARE locks that ordinary foreign keys take.
 
 ------------------------------------------------------------------------------
 -- Helpers
@@ -37,17 +46,21 @@ $$;
 
 -- Does the person have a stint with the team that covers the date?
 -- p_roles limits it to stints in those roles; NULL means any role.
+-- The stint found is locked FOR SHARE: until this transaction ends, no other session can
+-- end, move or delete it.
 CREATE FUNCTION has_stint(p_person_id integer, p_team_id integer, p_on date,
                           p_roles text[] DEFAULT NULL) RETURNS boolean
-LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (
-        SELECT 1 FROM roster r
-        WHERE r.person_id = p_person_id
-          AND r.team_id = p_team_id
-          AND r.start_date <= p_on
-          AND (r.end_date IS NULL OR p_on < r.end_date)
-          AND (p_roles IS NULL OR r.roster_role = ANY (p_roles)))
-$$;
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM 1 FROM roster r
+    WHERE r.person_id = p_person_id
+      AND r.team_id = p_team_id
+      AND r.start_date <= p_on
+      AND (r.end_date IS NULL OR p_on < r.end_date)
+      AND (p_roles IS NULL OR r.roster_role = ANY (p_roles))
+    FOR SHARE;
+    RETURN FOUND;
+END $$;
 
 -- Readable names for error messages, so the app shows "Den (HP)" rather than "map 3, mode 1".
 CREATE FUNCTION person_label(p_person_id integer) RETURNS text
@@ -108,11 +121,16 @@ END $$;
 CREATE FUNCTION check_r02(p_match_id integer, p_team_id integer) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM competes_in c WHERE c.match_id = p_match_id AND c.team_id = p_team_id)
-       AND NOT EXISTS (
-           SELECT 1 FROM match m
-           JOIN participates_in p ON p.tournament_id = m.tournament_id AND p.team_id = p_team_id
-           WHERE m.match_id = p_match_id) THEN
+    IF NOT EXISTS (SELECT 1 FROM competes_in c WHERE c.match_id = p_match_id AND c.team_id = p_team_id) THEN
+        RETURN;
+    END IF;
+
+    PERFORM 1
+    FROM match m
+    JOIN participates_in p ON p.tournament_id = m.tournament_id AND p.team_id = p_team_id
+    WHERE m.match_id = p_match_id
+    FOR KEY SHARE OF p;
+    IF NOT FOUND THEN
         PERFORM raise_rule(2, format(
             '%s does not participate in the tournament of match %s', team_label(p_team_id), p_match_id));
     END IF;
@@ -252,25 +270,30 @@ DECLARE
     v_best_of   smallint;
     v_slot_mode integer;
 BEGIN
+    -- FOR SHARE OF ph: the phase cannot switch pool or layout until this transaction ends.
     SELECT g.map_id, g.mode_id, ph.pool_id, ph.layout_id, m.best_of
     INTO v_map, v_mode, v_pool, v_layout, v_best_of
     FROM game g
     JOIN match m  ON m.match_id = g.match_id
     JOIN phase ph ON ph.tournament_id = m.tournament_id AND ph.phase_number = m.phase_number
-    WHERE g.match_id = p_match_id AND g.game_number = p_game_number;
+    WHERE g.match_id = p_match_id AND g.game_number = p_game_number
+    FOR SHARE OF ph;
     IF NOT FOUND THEN
         RETURN;
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM pool_entry pe
-                   WHERE pe.pool_id = v_pool AND pe.map_id = v_map AND pe.mode_id = v_mode) THEN
+    PERFORM 1 FROM pool_entry pe
+    WHERE pe.pool_id = v_pool AND pe.map_id = v_map AND pe.mode_id = v_mode
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
         PERFORM raise_rule(7, format('%s is not in this phase''s map pool, "%s"',
             map_mode_label(v_map, v_mode), (SELECT pool_name FROM map_pool WHERE pool_id = v_pool)));
     END IF;
 
     SELECT s.mode_id INTO v_slot_mode
     FROM series_slot s
-    WHERE s.layout_id = v_layout AND s.best_of = v_best_of AND s.game_number = p_game_number;
+    WHERE s.layout_id = v_layout AND s.best_of = v_best_of AND s.game_number = p_game_number
+    FOR SHARE;
     IF v_slot_mode IS DISTINCT FROM v_mode THEN
         PERFORM raise_rule(7, format(
             'game %s of a best of %s must be %s under this phase''s layout, not %s',
@@ -389,13 +412,16 @@ BEGIN
     FROM map_veto v
     JOIN match m  ON m.match_id = v.match_id
     JOIN phase ph ON ph.tournament_id = m.tournament_id AND ph.phase_number = m.phase_number
-    WHERE v.match_id = p_match_id AND v.veto_order = p_veto_order;
+    WHERE v.match_id = p_match_id AND v.veto_order = p_veto_order
+    FOR SHARE OF ph;
     IF NOT FOUND THEN
         RETURN;
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM pool_entry pe
-                   WHERE pe.pool_id = v_pool AND pe.map_id = v_map AND pe.mode_id = v_mode) THEN
+    PERFORM 1 FROM pool_entry pe
+    WHERE pe.pool_id = v_pool AND pe.map_id = v_map AND pe.mode_id = v_mode
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
         PERFORM raise_rule(10, format(
             '%s is not in this phase''s map pool, so it cannot be picked or banned',
             map_mode_label(v_map, v_mode)));
@@ -476,7 +502,8 @@ DECLARE
 BEGIN
     SELECT gm.abbreviation INTO v_mode
     FROM game g JOIN game_mode gm ON gm.mode_id = g.mode_id
-    WHERE g.match_id = p_match_id AND g.game_number = p_game_number;
+    WHERE g.match_id = p_match_id AND g.game_number = p_game_number
+    FOR SHARE OF g;                     -- the game's mode cannot change under us
     IF NOT FOUND THEN
         RETURN;
     END IF;
@@ -559,18 +586,26 @@ LANGUAGE plpgsql AS $$
 DECLARE
     v_role text;
 BEGIN
-    SELECT r.roster_role INTO v_role
-    FROM roster r
-    WHERE r.person_id = p_person_id
-      AND ((r.roster_role IN ('starter', 'substitute', 'two-way')
-            AND NOT EXISTS (SELECT 1 FROM player WHERE person_id = p_person_id))
-        OR (r.roster_role IN ('head coach', 'assistant coach')
-            AND NOT EXISTS (SELECT 1 FROM coach WHERE person_id = p_person_id)))
+    SELECT r.roster_role INTO v_role FROM roster r
+    WHERE r.person_id = p_person_id AND r.roster_role IN ('starter', 'substitute', 'two-way')
     LIMIT 1;
     IF FOUND THEN
-        PERFORM raise_rule(15, format('%s cannot be a %s without a %s record',
-            person_label(p_person_id), v_role,
-            CASE WHEN v_role LIKE '%coach' THEN 'coach' ELSE 'player' END));
+        PERFORM 1 FROM player WHERE person_id = p_person_id FOR KEY SHARE;
+        IF NOT FOUND THEN
+            PERFORM raise_rule(15, format('%s cannot be a %s without a player record',
+                person_label(p_person_id), v_role));
+        END IF;
+    END IF;
+
+    SELECT r.roster_role INTO v_role FROM roster r
+    WHERE r.person_id = p_person_id AND r.roster_role IN ('head coach', 'assistant coach')
+    LIMIT 1;
+    IF FOUND THEN
+        PERFORM 1 FROM coach WHERE person_id = p_person_id FOR KEY SHARE;
+        IF NOT FOUND THEN
+            PERFORM raise_rule(15, format('%s cannot be a %s without a coach record',
+                person_label(p_person_id), v_role));
+        END IF;
     END IF;
 END $$;
 
@@ -794,8 +829,10 @@ BEGIN
         RETURN;
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM registered_in r
-                   WHERE r.team_id = p_team_id AND r.league_id = v_league AND r.season_year = v_year) THEN
+    PERFORM 1 FROM registered_in r
+    WHERE r.team_id = p_team_id AND r.league_id = v_league AND r.season_year = v_year
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
         PERFORM raise_rule(26, format('%s is not registered for the %s %s season',
             team_label(p_team_id), (SELECT abbreviation FROM league WHERE event_id = v_league), v_year));
     END IF;

@@ -23,7 +23,9 @@ rule 14's same-team part is an EXCLUDE constraint too (docs/deviation_log.md, D2
 - `db/07_triggers.sql` decides **when** each check runs. Each table that can break a rule has
   up to two triggers: `rules_<table>` runs as soon as the statement runs (**immediate**), and
   `rules_<table>_at_commit` is a deferred constraint trigger that runs at COMMIT
-  (**at commit**). In total there are 45 triggers, 24 of them at commit.
+  (**at commit**). In total there are 46 triggers, 24 of them at commit. One of them,
+  `rules_match_advance`, writes rather than checks: it moves a completed match's winner and
+  loser into their next matches (rule 3).
 - A check waits for commit when the rows it counts are written one after another (a game,
   then its two scores, then eight stats rows), or when one change may update the rows it
   compares in either order (moving a tournament and its phases a week later). A function
@@ -33,9 +35,13 @@ rule 14's same-team part is an EXCLUDE constraint too (docs/deviation_log.md, D2
   the rule is about. Rule 12, for example, is checked when a player is listed for a match,
   and again when a stint is ended or deleted, when a match is rescheduled, and when its
   tournament changes.
-- Counting checks lock the parent row first (rule 27: the tournament; rule 14: the team, then
-  the person) with `FOR NO KEY UPDATE`, so two sessions cannot both pass the count.
-  `tests/test_concurrency.py` shows that the second session waits, then is refused.
+- Checks hold when two sessions write at once. A check that needs a row to exist locks it
+  the way a foreign key does (`FOR KEY SHARE`, or `FOR SHARE` when a non-key column such as
+  a stint's `end_date` matters), so no other session can delete or change it before this
+  transaction ends. A check that counts rows (rules 3, 14, 27) first locks the parent row
+  with `FOR NO KEY UPDATE`, so a second session waits and then counts again.
+  `tests/test_concurrency.py` shows both: the last tournament place (rule 27) and a season
+  registration deleted while a team is being entered (rule 26).
 - Trigger names start with `rules_`, so on each table they fire after PostgreSQL's own
   foreign key triggers (`RI_...`). A row that breaks a foreign key reports that error first.
 
@@ -58,7 +64,7 @@ rule 14's same-team part is an EXCLUDE constraint too (docs/deviation_log.md, D2
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | At most two teams per match; exactly two once started | `slot IN (1, 2)`, `UNIQUE (match_id, slot)` | `check_r01` | match I/U; competes_in I/U/D | At commit | `test_match_has_at_most_two_slots_rule_1`, `test_r01_a_started_match_needs_two_teams` |
 | 2 | A team plays only in tournaments it participates in | | `check_r02` | competes_in I/U; match U (moved); participates_in U/D | Immediate | `test_r02_team_must_participate_in_the_tournament`, `test_r02_a_team_with_matches_cannot_leave_the_tournament` |
-| 3 | Bracket links stay in one tournament; each slot fed once | `UNIQUE (winner_to_match_id, winner_to_slot)`, `UNIQUE (loser_to_match_id, loser_to_slot)`, slot checks | `check_r03` | match I/U | Immediate | `test_r03_bracket_links_stay_in_one_tournament`, `test_r03_a_slot_cannot_be_fed_by_a_winner_and_a_loser` |
+| 3 | Bracket links stay in one tournament; each slot fed once; when a match ends, its winner and loser take their slots in the next matches | `UNIQUE (winner_to_match_id, winner_to_slot)`, `UNIQUE (loser_to_match_id, loser_to_slot)`, slot checks | `check_r03`; `advance_bracket` moves the teams | match I/U; match U when completed | Immediate | `test_r03_bracket_links_stay_in_one_tournament`, `test_r03_a_slot_cannot_be_fed_by_a_winner_and_a_loser`, `test_r03_a_completed_match_moves_its_winner_and_loser_on`, `test_r03_a_corrected_result_moves_the_right_teams`, `test_r03_who_moved_on_cannot_change_once_the_next_match_started`, `test_r03_a_match_cannot_complete_without_a_winner` |
 | 4 | At most `best_of` games; no result after the series is decided | | `check_r04_length`, `check_r04_end` | length: game I/U, match U; end: game, team_result, match | Length immediate, end at commit | `test_r04_no_game_beyond_best_of`, `test_r04_no_result_after_the_series_is_decided` |
 | 5 | Awarded team only on a forfeit, and one of the match's teams | NULL-safe CHECKs; `(match_id, awarded_team_id) → competes_in` | | | Immediate | `test_awarded_team_must_be_one_of_the_match_teams_rule_5`, `test_awarded_team_only_on_forfeit_even_when_result_type_is_null_rule_5` |
 | 6 | A played game has scores for both teams | `team_result (match_id, team_id) → competes_in` | `check_r06` | game I/U; team_result I/U/D | At commit | `test_score_must_belong_to_a_team_in_the_match_rule_6`, `test_r06_a_played_game_needs_both_scores` |
@@ -77,11 +83,11 @@ rule 14's same-team part is an EXCLUDE constraint too (docs/deviation_log.md, D2
 | 19 | A penalty points to a match or one of its games; a named team is in that match | shared `match_id`; CHECK `penalty_parts_need_match`; `(match_id, team_id) → competes_in` | | | Immediate | `test_penalty_game_needs_its_match_rule_19` |
 | 20 | A penalty names someone; a named person had a stint with the named team | CHECK `penalty_names_someone` | `check_r20` | penalty I/U; roster U/D | Immediate | `test_penalty_names_someone_rule_20`, `test_r20_a_penalty_naming_both_needs_their_stint` |
 | 21 | Forfeit penalties agree with the forfeit result | | `check_r21` | penalty I/U; match U; game U | At commit | `test_r21_a_game_forfeit_penalty_needs_a_forfeited_game`, `test_r21_a_match_forfeit_penalty_matches_a_forfeited_match` |
-| 22 | Suspensions have a start date; dispute penalties point at the dispute's match | CHECK `penalty_suspension_has_start`; `(match_id, dispute_number) → dispute` | | | Immediate | |
-| 23 | Disputes are raised by a match team; resolved disputes are complete | `(match_id, raised_by_team_id) → competes_in`; CHECK `dispute_resolved_is_complete` | | | Immediate | |
+| 22 | Suspensions have a start date; dispute penalties point at the dispute's match | CHECK `penalty_suspension_has_start`; `(match_id, dispute_number) → dispute` | | | Immediate | `test_r22_a_suspension_needs_a_start_date`, `test_r22_a_dispute_penalty_points_at_the_dispute_match` |
+| 23 | Disputes are raised by a match team; resolved disputes are complete | `(match_id, raised_by_team_id) → competes_in`; CHECK `dispute_resolved_is_complete` | | | Immediate | `test_r23_a_dispute_is_raised_by_a_team_in_the_match`, `test_r23_a_resolved_dispute_is_complete` |
 | 24 | Reward bands do not overlap; points count only in league seasons | EXCLUDE `placement_reward_no_overlap_r24`; points views only sum staged tournaments | | | Immediate | `test_reward_bands_cannot_overlap_rule_24` |
 | 25 | Tournament, stage and phase dates nest | | `check_r25_season`, `_stage`, `_tournament`, `_phase` | season U; stage I/U; tournament I/U; phase I/U | At commit | `test_r25_a_tournament_falls_within_its_stage`, `test_r25_a_phase_falls_within_its_tournament`, `test_r25_moving_a_tournament_and_its_phase_together_is_allowed` |
-| 26 | Teams in a season tournament are registered for that season | | `check_r26` | participates_in I/U; registered_in U/D; tournament U | Immediate | `test_r26_season_participants_must_be_registered`, `test_r26_a_registration_in_use_cannot_be_dropped` |
+| 26 | Teams in a season tournament are registered for that season | | `check_r26` | participates_in I/U; registered_in U/D; tournament U | Immediate | `test_r26_season_participants_must_be_registered`, `test_r26_a_registration_in_use_cannot_be_dropped`, `test_r26_a_registration_cannot_vanish_under_a_new_entry` |
 | 27 | At most `max_teams` participants | | `check_r27` (locks the tournament) | participates_in I/U; tournament U | Immediate | `test_r27_a_tournament_takes_at_most_max_teams`, `test_r27_max_teams_cannot_drop_below_the_field`, `test_r27_two_sessions_cannot_both_take_the_last_place` |
 | 28 | `final_placement` is between 1 and the number of teams | CHECK `final_placement >= 1` | `check_r28` | participates_in I/U/D | At commit | `test_r28_final_placement_fits_the_field` |
 | 29 | Every period is ordered | CHECKs `end_date >= start_date`, `valid_to >= valid_from` | | | Immediate | `test_periods_must_be_ordered_rule_29` |
@@ -112,6 +118,7 @@ app can show them as they are.
 
 ## Proving the tests test something
 
-With `db/07_triggers.sql` removed, 41 of the 45 tests in `tests/test_rules.py` fail. The 4 that
-still pass are the ones that check valid data is accepted. With the lock in `check_r27`
-removed, `tests/test_concurrency.py` fails because the second session no longer waits.
+With `db/07_triggers.sql` removed, every test in `tests/test_rules.py` that breaks a
+trigger-enforced rule fails; only the tests of valid data and of the declarative rules 22
+and 23 still pass. With the lock in `check_r27` or in `check_r26` removed, the matching test
+in `tests/test_concurrency.py` fails because the second session no longer waits.

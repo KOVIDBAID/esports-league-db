@@ -388,3 +388,90 @@ def test_t4_every_stats_row_has_its_mode_details(db, tiny_match):
     play_game(db, w["match_id"], 1, DEN, HP, {a: 250, b: 200}, {a: w["players_a"], b: w["players_b"][:3]})
     add_stats(db, w["players_b"][3], w["match_id"], 1, None)      # stats row without its Hardpoint row
     rejects_at_commit(db, "T0004")
+
+
+# ---------------------------------------------------------------- rules 22 and 23 (declarative)
+
+def test_r22_a_suspension_needs_a_start_date(db, tiny_match):
+    rejects(db, "23514", """INSERT INTO penalty (penalty_type, reason, issued_by, person_id)
+                            VALUES ('suspension', 'conduct', %s, %s)""",
+            (new_official(db), tiny_match["players_a"][0]))
+
+
+def test_r22_a_dispute_penalty_points_at_the_dispute_match(db, tiny_match):
+    cup = tiny_match["cup"]
+    other = new_match(db, cup, [tiny_match["team_a"], tiny_match["team_b"]], match_number=2)
+    db.execute("""INSERT INTO dispute (match_id, dispute_number, reason, raised_by_team_id)
+                  VALUES (%s, 1, 'lag', %s)""", (tiny_match["match_id"], tiny_match["team_a"]))
+    # Dispute 1 belongs to match 1; a penalty on match 2 cannot cite it.
+    rejects(db, "23503", """INSERT INTO penalty (penalty_type, reason, issued_by, team_id, match_id, dispute_number)
+                            VALUES ('warning', 'lag abuse', %s, %s, %s, 1)""",
+            (new_official(db), tiny_match["team_b"], other))
+
+
+def test_r23_a_dispute_is_raised_by_a_team_in_the_match(db, tiny_match):
+    outsider = new_team(db, "Outsider")
+    rejects(db, "23503", """INSERT INTO dispute (match_id, dispute_number, reason, raised_by_team_id)
+                            VALUES (%s, 1, 'lag', %s)""", (tiny_match["match_id"], outsider))
+
+
+def test_r23_a_resolved_dispute_is_complete(db, tiny_match):
+    rejects(db, "23514", """INSERT INTO dispute (match_id, dispute_number, reason, raised_by_team_id, status)
+                            VALUES (%s, 1, 'lag', %s, 'resolved')""", (tiny_match["match_id"], tiny_match["team_a"]))
+
+
+# ---------------------------------------------------------------- rule 3: the bracket moves teams on
+
+def bracket(db, w):
+    """Match 1 sends its winner to slot 1 of the final and its loser to slot 2 of a lower match."""
+    cup = w["cup"]
+    final = new_match(db, cup, [], match_number=2)
+    lower = new_match(db, cup, [], match_number=3)
+    db.execute("""UPDATE match SET winner_to_match_id = %s, winner_to_slot = 1,
+                                   loser_to_match_id = %s, loser_to_slot = 2 WHERE match_id = %s""",
+               (final, lower, w["match_id"]))
+    return final, lower
+
+
+def slots(db, match_id):
+    return dict(db.execute("SELECT slot, team_id FROM competes_in WHERE match_id = %s", (match_id,)).fetchall())
+
+
+def test_r03_a_completed_match_moves_its_winner_and_loser_on(db, tiny_match):
+    w = tiny_match
+    final, lower = bracket(db, w)
+    list_players(db, w["match_id"], w["cup"], [w["team_a"], w["team_b"]])
+    sweep(db, w)
+    db.execute("UPDATE match SET status = 'completed', result_type = 'played' WHERE match_id = %s", (w["match_id"],))
+    assert slots(db, final) == {1: w["team_a"]}
+    assert slots(db, lower) == {2: w["team_b"]}
+    at_commit(db)
+
+
+def test_r03_a_corrected_result_moves_the_right_teams(db, tiny_match):
+    w = tiny_match
+    final, lower = bracket(db, w)
+    list_players(db, w["match_id"], w["cup"], [w["team_a"], w["team_b"]])
+    sweep(db, w)
+    db.execute("UPDATE match SET status = 'completed', result_type = 'played' WHERE match_id = %s", (w["match_id"],))
+    # A dispute awards the match to B: the two teams swap places in the next matches.
+    db.execute("UPDATE match SET result_type = 'forfeit', awarded_team_id = %s WHERE match_id = %s",
+               (w["team_b"], w["match_id"]))
+    assert slots(db, final) == {1: w["team_b"]}
+    assert slots(db, lower) == {2: w["team_a"]}
+
+
+def test_r03_who_moved_on_cannot_change_once_the_next_match_started(db, tiny_match):
+    w = tiny_match
+    final, _ = bracket(db, w)
+    list_players(db, w["match_id"], w["cup"], [w["team_a"], w["team_b"]])
+    sweep(db, w)
+    db.execute("UPDATE match SET status = 'completed', result_type = 'played' WHERE match_id = %s", (w["match_id"],))
+    db.execute("UPDATE match SET status = 'live' WHERE match_id = %s", (final,))
+    rejects(db, "R0003", "UPDATE match SET result_type = 'forfeit', awarded_team_id = %s WHERE match_id = %s",
+            (w["team_b"], w["match_id"]))
+
+
+def test_r03_a_match_cannot_complete_without_a_winner(db, tiny_match):
+    bracket(db, tiny_match)
+    rejects(db, "R0003", "UPDATE match SET status = 'completed' WHERE match_id = %s", (tiny_match["match_id"],))
