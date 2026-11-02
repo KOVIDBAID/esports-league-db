@@ -54,6 +54,22 @@ BEGIN
 END $$;
 
 ------------------------------------------------------------------------------
+-- raise_total: raise a total-participation error
+------------------------------------------------------------------------------
+-- The report's four participation constraints (Section 4.5) are numbered T1 to T4 in
+-- docs/rules.md: every team has an identity, every event a host, every event is a league
+-- or a tournament, every stats row has its mode details.
+-- raise_total(1, 'team 7 has no team identity') -> SQLSTATE T0001, message 'T0001: ...'
+CREATE FUNCTION raise_total(p_constraint integer, p_message text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_code text := 'T' || lpad(p_constraint::text, 4, '0');
+BEGIN
+    RAISE EXCEPTION USING ERRCODE = v_code, MESSAGE = v_code || ': ' || p_message;
+END $$;
+
+------------------------------------------------------------------------------
 -- fn_ok / fn_fail: build results; fn_fail also writes the error_log row
 ------------------------------------------------------------------------------
 CREATE FUNCTION fn_ok(p_message text, p_data jsonb DEFAULT NULL)

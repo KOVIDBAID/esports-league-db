@@ -7,7 +7,7 @@ import psycopg
 import pytest
 from psycopg import errors
 
-from conftest import DEN, HP, OVR, RAID, SCAR, SND, new_team, one, play_game
+from conftest import DEN, HP, OVR, RAID, SCAR, SND, new_player, new_team, one, play_game
 
 EXPECTED_TABLES = {
     # Events and structure
@@ -109,9 +109,7 @@ def test_team_identity_periods_cannot_overlap_rule_18(db):
 
 def test_same_team_stints_cannot_overlap_rule_14(db):
     team = new_team(db, "Roster FC")
-    person = one(db, "INSERT INTO person (first_name, last_name) VALUES ('Sam', 'Lee') RETURNING person_id")
-    db.execute("""INSERT INTO roster (person_id, team_id, start_date, roster_role, join_type)
-                  VALUES (%s, %s, '2026-01-01', 'starter', 'signing')""", (person, team))
+    person = new_player(db, "Sam", team, start="2026-01-01")
     fails(db, errors.ExclusionViolation,
           """INSERT INTO roster (person_id, team_id, start_date, roster_role, join_type)
              VALUES (%s, %s, '2026-02-01', 'substitute', 'signing')""", (person, team))

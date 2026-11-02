@@ -13,8 +13,8 @@ Team: Ishita Kaushik (2024UMA0210), Kovid Baid (2024UMA0214), Saswade Aditya Nac
 | --- | --- | --- |
 | 1. Set up | Repository, Docker database, rebuild script, tests on every push | Done |
 | 2. Schema | 42 tables, keys and checks, 16 views, reference data, schema tests | Done |
-| 3. Rules | Triggers for the rules that compare or count rows ([docs/rules.md](docs/rules.md)) | Next |
-| 4. Functions | 12 transactional functions (5 for the demo, 7 in reserve) | |
+| 3. Rules | All 29 rules and 4 participation constraints enforced; 45 triggers ([docs/rules.md](docs/rules.md)) | Done |
+| 4. Functions | 12 transactional functions (5 for the demo, 7 in reserve) | Next |
 | 5. Data | Seed stages 2 to 5: people, teams, a season, the demo starting point | |
 | 6. Demo | Streamlit app for the live presentation | |
 
@@ -60,6 +60,8 @@ db/
   02_checks.sql       coded values, date order, and the EXCLUDE constraints for rules 14, 18, 24
   04_views.sql        16 views for the derived attributes (report Section 2.7)
   05_support.sql      error_log, fn_result and the error helpers used by every function
+  06_rule_checks.sql  one check function per business rule: check_r01 ... check_r28, check_t1 ... t4
+  07_triggers.sql     when each check runs: per table, immediately or at commit
   functions/          one file per function (Phase 4)
 seed/
   reference/          stage 1: regions, modes, formats, maps, the 2026 map pool, the Bo5 layout
@@ -69,15 +71,21 @@ scripts/
 tests/
   conftest.py         fresh database per test run; each test rolled back afterwards
   test_schema.py      the schema and its declarative rules
+  test_rules.py       one test per way of breaking each trigger-enforced rule
+  test_concurrency.py two sessions racing for the last tournament place (uses its own database)
 docs/
-  rules.md            each of the 29 business rules: how it is enforced, status, test
+  rules.md            each of the 29 business rules: how and when it is enforced, and its tests
   deviation_log.md    every difference from the mid-semester report, with the reason
 .github/workflows/
   ci.yml              runs rebuild and tests on PostgreSQL 18.6 for every push
 ```
 
-The `db/` files run in name order, then `db/functions/`. The Phase 3 triggers will go in
-`06_triggers.sql`, after the support helpers they call.
+The `db/` files run in name order, then `db/functions/`.
+
+When a change breaks a rule, the error code names it: `R0012` is rule 12, `T0001` is the
+first participation constraint (every team has a name). The message says which rows are
+involved, for example `R0012: Shotzzy has no playing or coaching stint with OpTic Texas on
+2026-03-01`.
 
 ## How we work
 
