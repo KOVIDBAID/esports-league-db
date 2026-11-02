@@ -14,8 +14,8 @@ Team: Ishita Kaushik (2024UMA0210), Kovid Baid (2024UMA0214), Saswade Aditya Nac
 | 1. Set up | Repository, Docker database, rebuild script, tests on every push | Done |
 | 2. Schema | 42 tables, keys and checks, 16 views, reference data, schema tests | Done |
 | 3. Rules | All 29 rules and 4 participation constraints enforced; 46 triggers ([docs/rules.md](docs/rules.md)) | Done |
-| 4. Functions | 12 transactional functions (5 for the demo, 7 in reserve) | Next |
-| 5. Data | Seed stages 2 to 5: people, teams, a season, the demo starting point | |
+| 4. Functions | All 12 functions, each one transaction with logged errors ([docs/functions.md](docs/functions.md)) | Done |
+| 5. Data | Seed stages 2 to 5: people, teams, a season, the demo starting point | Next |
 | 6. Demo | Streamlit app for the live presentation | |
 
 ## Quick start
@@ -62,7 +62,7 @@ db/
   05_support.sql      error_log, fn_result and the error helpers used by every function
   06_rule_checks.sql  one check function per business rule: check_r01 ... check_r28, check_t1 ... t4
   07_triggers.sql     when each check runs: per table, immediately or at commit
-  functions/          one file per function (Phase 4)
+  functions/          the 12 functions, one file each, numbered as in the plan
 seed/
   reference/          stage 1: regions, modes, formats, maps, the 2026 map pool, the Bo5 layout
 scripts/
@@ -72,9 +72,11 @@ tests/
   conftest.py         fresh database per test run; each test rolled back afterwards
   test_schema.py      the schema and its declarative rules
   test_rules.py       one test per way of breaking each trigger-enforced rule
-  test_concurrency.py two sessions racing on rules 26 and 27 (uses its own database)
+  test_functions_*.py a success test per function and a failure test per guarded rule
+  test_concurrency.py two sessions at once: rules 26 and 27, and the same match recorded twice
 docs/
   rules.md            each of the 29 business rules: how and when it is enforced, and its tests
+  functions.md        the 12 functions: contract, error codes, inputs, rules, demo failures
   deviation_log.md    every difference from the mid-semester report, with the reason
 .github/workflows/
   ci.yml              runs rebuild and tests on PostgreSQL 18.6 for every push
@@ -82,8 +84,12 @@ docs/
 
 The `db/` files run in name order, then `db/functions/`.
 
-When a change breaks a rule, the error code names it: `R0012` is rule 12, `T0001` is the
-first participation constraint (every team has a name). The message says which rows are
+Every operation is a function call, for example
+`SELECT * FROM transfer_player(p_person_id => 17, p_from_team => 3, p_to_team => 5, p_date => '2026-04-01');`.
+It returns `(ok, code, message, data)`; a failed call changes nothing and leaves one row in
+`error_log`. When a change breaks a rule, the error code names it: `R0012` is rule 12, `T0001`
+is the first participation constraint (every team has a name), `FN001` to `FN003` are the
+functions' own checks. The message says which rows are
 involved, for example `R0012: Shotzzy has no playing or coaching stint with OpTic Texas on
 2026-03-01`.
 
