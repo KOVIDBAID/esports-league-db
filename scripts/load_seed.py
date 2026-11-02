@@ -1,32 +1,51 @@
 """Load the seed data in stages (implementation plan, Section 6).
 
-Each stage is one transaction: if any row fails, the whole stage rolls back and
-the loader reports the file, line and the error.
+Each stage is one transaction: if any row or call fails, the whole stage rolls back and
+the loader reports the file (or function call) and the error.
 
-Stage 1 (reference data) is loaded from CSV files in seed/reference/.
-Later stages are added as the project reaches them:
-    stage 2  people and teams          (CSV)
-    stage 3  competition structure     (CSV)
-    stage 4  season history            (calls to our own functions)
-    stage 5  demo starting point       (calls to our own functions)
+    stage 1  reference data          CSV in seed/reference/
+    stage 2  people and teams        CSV in seed/people/
+    stage 3  competition structure   CSV in seed/structure/
+    stage 4  season history          calls to our own functions (scripts/seed_season.py)
+    stage 5  demo starting point     calls to our own functions (scripts/seed_season.py)
+
+The order follows the foreign keys: no stage refers to a row that a later stage creates.
 """
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import psycopg
 from psycopg import sql
 
+import seed_season
+
 ROOT = Path(__file__).resolve().parent.parent
 SEED = ROOT / "seed"
 
-# (stage name, [table, ...]) in foreign key order; each table reads seed/<folder>/<table>.csv
-STAGES: list[tuple[str, str, list[str]]] = [
-    ("reference", "reference", [
-        "region", "game_mode", "format", "map", "map_pool", "pool_entry",
-        "series_layout", "series_slot",
-    ]),
+
+@dataclass
+class Stage:
+    name: str
+    folder: str | None = None                       # CSV stages: seed/<folder>/<table>.csv
+    tables: list[str] = field(default_factory=list)  # in foreign key order
+    script: Callable | None = None                   # function stages: script(conn) -> summary
+
+
+STAGES: list[Stage] = [
+    Stage("reference", "reference", [
+        "region", "organization", "venue", "game_mode", "format", "map", "map_pool", "pool_entry",
+        "series_layout", "series_slot"]),
+    Stage("people and teams", "people", [
+        "team", "team_identity", "person", "person_phone", "player", "official", "roster"]),
+    Stage("competition structure", "structure", [
+        "event", "hosted_by", "league", "season", "stage", "registered_in", "tournament", "phase",
+        "placement_reward"]),
+    Stage("season history", script=seed_season.season_history),
+    Stage("demo starting point", script=seed_season.demo_starting_point),
 ]
 
 
@@ -60,25 +79,38 @@ def reset_identities(conn: psycopg.Connection, tables: list[str]) -> None:
                  col=sql.Identifier(column), tab=sql.Identifier(table)))
 
 
-def load_stage(conn: psycopg.Connection, folder: str, tables: list[str]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    with conn.transaction():
-        for table in tables:
-            path = SEED / folder / f"{table}.csv"
-            try:
-                counts[table] = copy_csv(conn, table, path)
-            except psycopg.Error as exc:
-                raise SeedError(f"{path.relative_to(ROOT)}: {exc.diag.message_primary} "
-                                f"{exc.diag.context or ''}".strip()) from exc
-        reset_identities(conn, tables)
-        conn.execute("SET CONSTRAINTS ALL IMMEDIATE")   # run any commit-time checks now
-    return counts
+def load_stage(conn: psycopg.Connection, stage: Stage) -> dict:
+    """Run one stage in one transaction; return what it loaded."""
+    summary: dict = {}
+    try:
+        with conn.transaction():
+            if stage.script is None:
+                for table in stage.tables:
+                    path = SEED / stage.folder / f"{table}.csv"
+                    try:
+                        summary[table] = copy_csv(conn, table, path)
+                    except psycopg.Error as exc:
+                        raise SeedError(f"{path.relative_to(ROOT)}: {exc.diag.message_primary} "
+                                        f"{exc.diag.context or ''}".strip()) from exc
+                reset_identities(conn, stage.tables)
+            else:
+                summary = stage.script(conn)
+            conn.execute("SET CONSTRAINTS ALL IMMEDIATE")   # every commit-time check, now
+    except SeedError:
+        raise
+    except (psycopg.Error, seed_season.SeedCallError) as exc:
+        raise SeedError(f"stage '{stage.name}': {exc}") from exc
+    return summary
 
 
-def load_all(conn: psycopg.Connection, say=print) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for name, folder, tables in STAGES:
-        stage_counts = load_stage(conn, folder, tables)
-        say(f"  stage '{name}': {sum(stage_counts.values())} rows")
-        counts.update(stage_counts)
-    return counts
+def load_all(conn: psycopg.Connection, say=print, upto: str | None = None) -> dict:
+    """Load every stage in order, or the stages up to and including `upto`."""
+    loaded: dict = {}
+    for stage in STAGES:
+        summary = load_stage(conn, stage)
+        detail = ", ".join(f"{k} {v}" for k, v in summary.items())
+        say(f"  stage '{stage.name}': {detail}")
+        loaded[stage.name] = summary
+        if stage.name == upto:
+            break
+    return loaded

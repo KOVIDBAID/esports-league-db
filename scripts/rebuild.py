@@ -7,6 +7,7 @@ Usage (from the repository root):
     python scripts/rebuild.py              full rebuild
     python scripts/rebuild.py --no-seed    schema only, no data
     python scripts/rebuild.py --quiet      fewer messages (used by the tests)
+    python scripts/rebuild.py --seed-upto reference   only the first seed stage(s)
 
 Connection settings come from environment variables, or from .env:
     PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
@@ -84,10 +85,20 @@ def run_sql_files(conn: psycopg.Connection, say) -> None:
         say(f"  ran {path.relative_to(ROOT)}")
 
 
+def table_counts(conn: psycopg.Connection) -> dict[str, int]:
+    """Row count of every base table, for the loader's report."""
+    tables = [r[0] for r in conn.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name")]
+    return {t: conn.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(t))).fetchone()[0]
+            for t in tables}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-seed", action="store_true", help="build the schema only")
     parser.add_argument("--quiet", action="store_true", help="print only errors and the final line")
+    parser.add_argument("--seed-upto", metavar="STAGE", help="load the seed stages up to this one, e.g. reference")
     args = parser.parse_args(argv)
     say = (lambda *_: None) if args.quiet else print
 
@@ -99,8 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     with connect(cfg) as conn:
         run_sql_files(conn, say)
         if not args.no_seed:
-            counts = load_seed.load_all(conn, say)
-            say("Rows loaded: " + ", ".join(f"{t} {n}" for t, n in counts.items()))
+            load_seed.load_all(conn, say, upto=args.seed_upto)
+            say("Rows per table: " + ", ".join(f"{t} {n}" for t, n in table_counts(conn).items() if n))
         version = conn.execute("SHOW server_version").fetchone()[0]
 
     print(f"Rebuild finished in {time.time() - started:.1f}s on PostgreSQL {version}.")

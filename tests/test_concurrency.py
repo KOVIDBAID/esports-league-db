@@ -23,7 +23,7 @@ def scratch_cfg():
     rebuild.recreate_database(cfg)
     with rebuild.connect(cfg) as conn:
         rebuild.run_sql_files(conn, lambda *_: None)
-        load_seed.load_all(conn, lambda *_: None)
+        load_seed.load_all(conn, lambda *_: None, upto="reference")
     yield cfg
     with psycopg.connect(**dict(cfg, dbname="postgres"), autocommit=True) as admin:
         admin.execute("DROP DATABASE IF EXISTS esports_concurrency_test WITH (FORCE)")

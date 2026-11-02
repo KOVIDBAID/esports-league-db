@@ -1,0 +1,4 @@
+tournament_id,phase_number,phase_name,default_best_of,points_per_win,start_date,end_date,format_id,pool_id,layout_id
+2,1,Qualifiers group A,5,10,2025-12-05,2026-01-25,3,1,1
+2,2,Qualifiers group B,5,10,2025-12-05,2026-01-25,3,1,1
+2,3,Playoffs,5,0,2026-01-29,2026-02-01,2,1,1

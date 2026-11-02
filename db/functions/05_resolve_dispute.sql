@@ -28,9 +28,10 @@
 --       p_penalties => '[{"penalty_type": "match forfeit", "team_id": 8}]');
 
 CREATE FUNCTION raise_dispute(
-    p_match_id integer,
-    p_team_id  integer,
-    p_reason   text)
+    p_match_id  integer,
+    p_team_id   integer,
+    p_reason    text,
+    p_raised_at timestamptz DEFAULT now())   -- given only when loading history
 RETURNS fn_result
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -50,8 +51,8 @@ BEGIN
     SELECT COALESCE(max(dispute_number), 0) + 1 INTO v_number FROM dispute WHERE match_id = p_match_id;
 
     -- Rule 23: the foreign key to competes_in refuses a team that is not in the match
-    INSERT INTO dispute (match_id, dispute_number, reason, raised_by_team_id)
-    VALUES (p_match_id, v_number, trim(p_reason), p_team_id);
+    INSERT INTO dispute (match_id, dispute_number, reason, raised_at, raised_by_team_id)
+    VALUES (p_match_id, v_number, trim(p_reason), COALESCE(p_raised_at, now()), p_team_id);
 
     PERFORM run_commit_checks();
     RETURN fn_ok(format('dispute %s on match %s raised by %s', v_number, p_match_id, team_label(p_team_id)),
@@ -69,7 +70,8 @@ CREATE FUNCTION resolve_dispute(
     p_decision       text,
     p_resolution     text,
     p_penalties      jsonb DEFAULT '[]',
-    p_forfeit        jsonb DEFAULT NULL)
+    p_forfeit        jsonb DEFAULT NULL,
+    p_resolved_at    timestamptz DEFAULT now())   -- given only when loading history
 RETURNS fn_result
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -141,10 +143,10 @@ BEGIN
 
     -- 3b. Issue the penalties, each tied to this match and this dispute (rules 19 to 22)
     FOR v_penalty IN SELECT * FROM jsonb_array_elements(COALESCE(p_penalties, '[]')) LOOP
-        INSERT INTO penalty (penalty_type, reason, start_date, end_date, fine_amount,
+        INSERT INTO penalty (penalty_type, reason, issued_at, start_date, end_date, fine_amount,
                              issued_by, team_id, person_id, match_id, game_number, dispute_number)
         VALUES (v_penalty ->> 'penalty_type',
-                COALESCE(v_penalty ->> 'reason', trim(p_resolution)),
+                COALESCE(v_penalty ->> 'reason', trim(p_resolution)), COALESCE(p_resolved_at, now()),
                 (v_penalty ->> 'start_date')::date, (v_penalty ->> 'end_date')::date,
                 (v_penalty ->> 'fine_amount')::numeric,
                 p_official_id, (v_penalty ->> 'team_id')::int, (v_penalty ->> 'person_id')::int,
@@ -155,7 +157,7 @@ BEGIN
 
     -- 3c. Close the dispute (rule 23: resolved_by and resolved_at are set)
     UPDATE dispute SET status = p_decision, resolution = trim(p_resolution),
-                       resolved_by = p_official_id, resolved_at = now()
+                       resolved_by = p_official_id, resolved_at = COALESCE(p_resolved_at, now())
     WHERE match_id = p_match_id AND dispute_number = p_dispute_number;
 
     -- 4. Run the commit-time checks now (rule 21 among them)

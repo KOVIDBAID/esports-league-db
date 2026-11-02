@@ -20,8 +20,9 @@
 --   SELECT * FROM run_map_veto(p_match_id => 40, p_vetoes => '[
 --     {"team_id": 7, "action": "ban",  "map_id": 2, "mode_id": 1}, ...]');
 CREATE FUNCTION run_map_veto(
-    p_match_id integer,
-    p_vetoes   jsonb)
+    p_match_id  integer,
+    p_vetoes    jsonb,
+    p_vetoed_at timestamptz DEFAULT now())   -- given only when loading history
 RETURNS fn_result
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -58,7 +59,7 @@ BEGIN
 
     -- 3a. The picks and bans (rule 10 is checked as each row goes in)
     INSERT INTO map_veto (match_id, veto_order, action, vetoed_at, team_id, map_id, mode_id)
-    SELECT p_match_id, v.ord, v.item ->> 'action', now(),
+    SELECT p_match_id, v.ord, v.item ->> 'action', COALESCE(p_vetoed_at, now()),
            (v.item ->> 'team_id')::int, (v.item ->> 'map_id')::int, (v.item ->> 'mode_id')::int
     FROM jsonb_array_elements(p_vetoes) WITH ORDINALITY AS v(item, ord);
 

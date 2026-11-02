@@ -105,6 +105,10 @@ Each file starts with a comment giving the JSON shape and an example call.
   player with stats must be in a lineup; both give a readable `FN003` before anything is
   written.
 
+- **Timestamps for history.** `raise_dispute`, `resolve_dispute` and `run_map_veto` take an
+  optional time (`p_raised_at`, `p_resolved_at`, `p_vetoed_at`, default now). Only the seed
+  loader passes it, so a dispute from January 2026 is recorded in January 2026.
+
 ## Tests
 
 `tests/test_functions_people.py`, `tests/test_functions_matches.py` and

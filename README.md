@@ -15,8 +15,8 @@ Team: Ishita Kaushik (2024UMA0210), Kovid Baid (2024UMA0214), Saswade Aditya Nac
 | 2. Schema | 42 tables, keys and checks, 16 views, reference data, schema tests | Done |
 | 3. Rules | All 29 rules and 4 participation constraints enforced; 46 triggers ([docs/rules.md](docs/rules.md)) | Done |
 | 4. Functions | All 12 functions, each one transaction with logged errors ([docs/functions.md](docs/functions.md)) | Done |
-| 5. Data | Seed stages 2 to 5: people, teams, a season, the demo starting point | Next |
-| 6. Demo | Streamlit app for the live presentation | |
+| 5. Data | The 2026 CDL teams and players, Major 1 played through the functions, Major 2 ready for the demo ([seed/README.md](seed/README.md)) | Done |
+| 6. Demo | Streamlit app for the live presentation | Next |
 
 ## Quick start
 
@@ -34,7 +34,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-python scripts/rebuild.py          # builds the database from scratch (about 1 second)
+python scripts/rebuild.py          # builds the database and loads the season (about 1 second)
 python -m pytest                   # all tests should pass
 ```
 
@@ -64,16 +64,22 @@ db/
   07_triggers.sql     when each check runs: per table, immediately or at commit
   functions/          the 12 functions, one file each, numbered as in the plan
 seed/
-  reference/          stage 1: regions, modes, formats, maps, the 2026 map pool, the Bo5 layout
+  reference/          stage 1: regions, organizations, venues, modes, formats, maps, map pool, layout
+  people/             stage 2: the 12 teams, 48 players and their stints, 4 officials
+  structure/          stage 3: the CDL, the 2026 season, stages, registrations, Major 1
+  README.md           what is real, what is generated, and the sources
 scripts/
   rebuild.py          drop, recreate, run db/ in order, load seed/
   load_seed.py        loads each seed stage in one transaction
+  seed_season.py      stages 4 and 5: Major 1 played through the functions; Major 2 created
+  snapshot.py         save and restore the demo starting point (pg_dump / pg_restore)
 tests/
   conftest.py         fresh database per test run; each test rolled back afterwards
   test_schema.py      the schema and its declarative rules
   test_rules.py       one test per way of breaking each trigger-enforced rule
   test_functions_*.py a success test per function and a failure test per guarded rule
   test_concurrency.py two sessions at once: rules 26 and 27, and the same match recorded twice
+  test_seed.py        the loaded season: real placements, history, determinism
 docs/
   rules.md            each of the 29 business rules: how and when it is enforced, and its tests
   functions.md        the 12 functions: contract, error codes, inputs, rules, demo failures
