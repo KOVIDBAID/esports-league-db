@@ -242,3 +242,49 @@ def test_a_pool_cannot_mix_game_titles(db):
                   p_entries=Jsonb(STAGE_2_POOL + [{"map_id": RAID_BO2, "mode_id": SND}]))
 
 
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_a_disbanded_team_cannot_be_placed_in_a_bracket(db):
+    cup = new_cup(db, "After Disband", teams=4)
+    db.execute("UPDATE team SET status = 'disbanded' WHERE team_id = %s", (cup["teams"][3],))
+    fails_cleanly(db, "FN001", ["match", "competes_in"], "setup_tournament_phase",
+                  p_tournament_id=cup["tournament_id"], p_phase_number=1, p_teams=Jsonb(cup["teams"]))
+
+
+def test_withdrawing_before_any_match_removes_the_entry(db):
+    cup = new_cup(db, "Not Started", teams=4)
+    result = succeeds(db, "withdraw_team", p_tournament_id=cup["tournament_id"], p_team_id=cup["teams"][0],
+                      p_official_id=new_official(db), p_reason="schedule clash")
+    assert result["data"]["entry_removed"] is True
+    assert one(db, "SELECT count(*) FROM participates_in WHERE tournament_id = %s", (cup["tournament_id"],)) == 3
+
+
+def test_disband_also_leaves_events_that_have_not_started(db, tiny_match):
+    upcoming = new_cup(db, "Upcoming", teams=0)
+    db.execute("INSERT INTO participates_in (team_id, tournament_id) VALUES (%s, %s)",
+               (tiny_match["team_b"], upcoming["tournament_id"]))
+    succeeds(db, "disband_team", p_team_id=tiny_match["team_b"], p_date="2026-02-20", p_official_id=new_official(db))
+    assert one(db, "SELECT count(*) FROM participates_in WHERE team_id = %s AND tournament_id = %s",
+               (tiny_match["team_b"], upcoming["tournament_id"])) == 0
+
+
+def test_stats_for_a_player_outside_the_lineups(db):
+    cup = setup_bracket(db)
+    m = cup["ids"]["U1-1"]
+    teams = teams_of(db, m)
+    payload = series(cup, teams, [teams[0]] * 3)
+    outsider = cup["players"][cup["teams"][1]][0]          # seed 2 does not play this match
+    payload["games"][0]["stats"][0]["person_id"] = outsider
+    result = fails_cleanly(db, "FN003", ["game", "match_player"], "record_series_result", p_match_id=m, p_series=payload)
+    assert "has stats but is not in either lineup" in result["message"]
+
+
+def test_games_are_numbered_without_gaps(db):
+    cup = setup_bracket(db)
+    m = cup["ids"]["U1-1"]
+    teams = teams_of(db, m)
+    payload = series(cup, teams, [teams[0]] * 3)
+    payload["games"][2]["game_number"] = 4
+    fails_cleanly(db, "FN003", ["game", "match_player"], "record_series_result", p_match_id=m, p_series=payload)

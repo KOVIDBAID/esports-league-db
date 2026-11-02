@@ -94,7 +94,16 @@ Each file starts with a comment giving the JSON shape and an example call.
   (1, 2, 3, 4, 5, 5, 7, 7). In a round robin, more wins place higher.
 - **Withdrawal (function 10).** A match still waiting for its other team cannot be forfeited
   yet, because a started match needs two teams (rule 1). Those matches come back under
-  `waiting`; calling `withdraw_team` again once the opponent is known finishes them.
+  `waiting`; calling `withdraw_team` again once the opponent is known finishes them. A team
+  that has not played in the tournament yet has no history there, so its entry is removed
+  (`entry_removed`).
+- **Disbanding (function 11).** Withdraws the team from every tournament it has not finished,
+  including ones that have not started, then ends its stints. A disbanded team cannot sign
+  players, be rebranded, or be placed in a bracket (`FN001`). Locks follow the agreed order:
+  tournaments, then matches (inside the withdrawal), then the team.
+- **Input checks in function 2.** Games must be numbered 1, 2, 3 ... with no gap, and every
+  player with stats must be in a lineup; both give a readable `FN003` before anything is
+  written.
 
 ## Tests
 

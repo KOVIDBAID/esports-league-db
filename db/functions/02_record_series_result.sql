@@ -81,6 +81,7 @@ DECLARE
     v_code     text;
     v_scores   integer[];
     v_winner   integer;
+    v_person   integer;
     v_score    text;
     e_state text; e_msg text; e_detail text; e_hint text; e_ctx text;
 BEGIN
@@ -106,6 +107,24 @@ BEGIN
     IF (SELECT array_agg((l ->> 'team_id')::int ORDER BY (l ->> 'team_id')::int)
         FROM jsonb_array_elements(p_series -> 'lineups') AS l) IS DISTINCT FROM v_teams THEN
         PERFORM raise_check(3, format('give one lineup for each of the two teams in match %s', p_match_id));
+    END IF;
+    -- Games are numbered 1, 2, 3 ... with no gap
+    IF (SELECT array_agg((g ->> 'game_number')::int ORDER BY (g ->> 'game_number')::int)
+        FROM jsonb_array_elements(p_series -> 'games') AS g)
+       IS DISTINCT FROM (SELECT array_agg(n) FROM generate_series(1, jsonb_array_length(p_series -> 'games')) AS n) THEN
+        PERFORM raise_check(3, 'the games must be numbered 1, 2, 3 ... with no gap or repeat');
+    END IF;
+    -- Every player with stats is in a lineup (otherwise the foreign key to match_player
+    -- would refuse the row with a less readable message)
+    SELECT (s ->> 'person_id')::int INTO v_person
+    FROM jsonb_array_elements(p_series -> 'games') AS g,
+         jsonb_array_elements(COALESCE(g -> 'stats', '[]')) AS s
+    WHERE (s ->> 'person_id')::int NOT IN (
+        SELECT p.value::int FROM jsonb_array_elements(p_series -> 'lineups') AS l,
+                                 jsonb_array_elements_text(l -> 'players') AS p)
+    LIMIT 1;
+    IF FOUND THEN
+        PERFORM raise_check(3, format('%s has stats but is not in either lineup', person_label(v_person)));
     END IF;
 
     -- 3a. When the series was played (optional); rules 12 and 16 use this date

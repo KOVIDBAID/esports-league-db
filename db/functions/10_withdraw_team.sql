@@ -10,6 +10,9 @@
 -- withdraw_team again once the opponent is known forfeits them. Calling it again is
 -- always safe: matches already forfeited are finished and are skipped.
 --
+-- A team that has no match in the tournament yet (its bracket is not set up) has no
+-- history there, so its entry (participates_in) is simply removed: "entry_removed".
+--
 -- Rules that guard the writes: 5 (the awarded team is in the match), 21 (the penalty
 -- matches the forfeit), 3 (moving teams on).
 -- Demo failure: a team that is not in the tournament -> FN002.
@@ -19,7 +22,7 @@
 --                               p_reason => 'roster could not travel');
 
 -- Internal: the work, without error handling, so disband_team can reuse it inside its own
--- transaction. Returns {"forfeited": [match ids], "waiting": [match ids]}.
+-- transaction. Returns {"forfeited": [match ids], "waiting": [match ids], "entry_removed": bool}.
 CREATE FUNCTION withdraw_from_tournament(p_tournament_id integer, p_team_id integer,
                                          p_official_id integer, p_reason text) RETURNS jsonb
 LANGUAGE plpgsql AS $$
@@ -32,6 +35,13 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM participates_in
                    WHERE tournament_id = p_tournament_id AND team_id = p_team_id) THEN
         PERFORM raise_check(2, format('%s is not in tournament %s', team_label(p_team_id), p_tournament_id));
+    END IF;
+
+    -- No match yet in this tournament: nothing to forfeit, no history; remove the entry
+    IF NOT EXISTS (SELECT 1 FROM competes_in c JOIN match m ON m.match_id = c.match_id
+                   WHERE c.team_id = p_team_id AND m.tournament_id = p_tournament_id) THEN
+        DELETE FROM participates_in WHERE tournament_id = p_tournament_id AND team_id = p_team_id;
+        RETURN jsonb_build_object('forfeited', '[]'::jsonb, 'waiting', '[]'::jsonb, 'entry_removed', true);
     END IF;
 
     LOOP
@@ -60,7 +70,7 @@ BEGIN
     WHERE m.tournament_id = p_tournament_id AND m.status NOT IN ('completed', 'cancelled');
 
     RETURN jsonb_build_object('forfeited', to_jsonb(v_forfeited),
-                              'waiting', to_jsonb(COALESCE(v_waiting, '{}')));
+                              'waiting', to_jsonb(COALESCE(v_waiting, '{}')), 'entry_removed', false);
 END $$;
 
 CREATE FUNCTION withdraw_team(
@@ -96,9 +106,11 @@ BEGIN
     -- 4. Run the commit-time checks now
     PERFORM run_commit_checks();
 
-    RETURN fn_ok(format('%s withdrawn: %s match(es) forfeited, %s waiting for an opponent',
-                        team_label(p_team_id), jsonb_array_length(v_done -> 'forfeited'),
-                        jsonb_array_length(v_done -> 'waiting')),
+    RETURN fn_ok(CASE WHEN (v_done ->> 'entry_removed')::boolean
+                      THEN format('%s withdrawn before playing; its entry is removed', team_label(p_team_id))
+                      ELSE format('%s withdrawn: %s match(es) forfeited, %s waiting for an opponent',
+                                  team_label(p_team_id), jsonb_array_length(v_done -> 'forfeited'),
+                                  jsonb_array_length(v_done -> 'waiting')) END,
                  v_done || jsonb_build_object('tournament_id', p_tournament_id, 'team_id', p_team_id));
 EXCEPTION WHEN OTHERS THEN
     GET STACKED DIAGNOSTICS e_state = RETURNED_SQLSTATE, e_msg = MESSAGE_TEXT,

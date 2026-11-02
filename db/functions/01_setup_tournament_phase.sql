@@ -80,6 +80,10 @@ BEGIN
     IF (SELECT count(DISTINCT t) FROM unnest(v_teams) AS t) <> v_n THEN
         PERFORM raise_check(3, 'a team is listed twice');
     END IF;
+    SELECT team_id INTO s FROM team WHERE team_id = ANY (v_teams) AND status = 'disbanded' LIMIT 1;
+    IF FOUND THEN
+        PERFORM raise_check(1, format('%s has disbanded and cannot be placed in a bracket', team_label(s)));
+    END IF;
 
     -- 2. Lock the tournament, then the phase
     PERFORM 1 FROM tournament WHERE event_id = p_tournament_id FOR NO KEY UPDATE;
