@@ -6,7 +6,8 @@
 -- fn_result: what every prototype function returns
 ------------------------------------------------------------------------------
 --   ok       true on success, false on failure
---   code     '00000' on success, otherwise the SQLSTATE (R00nn = rule nn, F0nnn = function check)
+--   code     '00000' on success, otherwise the SQLSTATE: R00nn = rule nn, T000n = total
+--            participation constraint n, FN00n = a function's own check, or PostgreSQL's code
 --   message  a readable sentence for the app and the logs
 --   data     JSON with the ids the call created (on success) or the error_log id (on failure)
 CREATE TYPE fn_result AS (
@@ -67,6 +68,38 @@ DECLARE
     v_code text := 'T' || lpad(p_constraint::text, 4, '0');
 BEGIN
     RAISE EXCEPTION USING ERRCODE = v_code, MESSAGE = v_code || ': ' || p_message;
+END $$;
+
+------------------------------------------------------------------------------
+-- raise_check: a function's own check failed (before it writes anything)
+------------------------------------------------------------------------------
+--   FN001  wrong state: the rows exist but do not allow this call (match already completed)
+--   FN002  not found: a row the call needs does not exist (no open stint with that team)
+--   FN003  bad input: a parameter or JSON field is missing or invalid
+-- PostgreSQL reserves class F0 for configuration-file errors (F0001 is lock_file_exists),
+-- so our codes use their own class, FN.
+CREATE FUNCTION raise_check(p_code integer, p_message text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_code text := 'FN' || lpad(p_code::text, 3, '0');
+BEGIN
+    RAISE EXCEPTION USING ERRCODE = v_code, MESSAGE = v_code || ': ' || p_message;
+END $$;
+
+------------------------------------------------------------------------------
+-- run_commit_checks: run every check that would otherwise wait for COMMIT
+------------------------------------------------------------------------------
+-- Every function calls this as its last step, inside its exception block, so a broken
+-- commit-time rule (a game without both scores, a team without an identity) fails the
+-- call itself and is logged, instead of surfacing later at COMMIT. It then defers the
+-- checks again, so several calls can share one transaction (the seed loader does this).
+CREATE FUNCTION run_commit_checks()
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+    SET CONSTRAINTS ALL IMMEDIATE;
+    SET CONSTRAINTS ALL DEFERRED;
 END $$;
 
 ------------------------------------------------------------------------------

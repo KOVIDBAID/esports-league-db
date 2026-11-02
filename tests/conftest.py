@@ -225,3 +225,44 @@ def tiny_match(db):
     return {"cup": cup, "tournament_id": cup["tournament_id"], "match_id": match_id,
             "team_a": team_a, "team_b": team_b,
             "players_a": cup["players"][team_a], "players_b": cup["players"][team_b]}
+
+
+# ---------------------------------------------------------------- calling the functions
+
+def call(conn, function: str, **params) -> dict:
+    """Call one of our functions with named parameters; return its fn_result as a dict.
+    A dict is sent as JSON; a list is sent as an SQL array (wrap it in Jsonb() for JSON)."""
+    from psycopg import sql as _sql
+    from psycopg.types.json import Jsonb
+    args = _sql.SQL(", ").join(
+        _sql.SQL("{} => {}").format(_sql.Identifier(name), _sql.Placeholder()) for name in params)
+    query = _sql.SQL("SELECT * FROM {}({})").format(_sql.Identifier(function), args)
+    values = [Jsonb(v) if isinstance(v, dict) else v for v in params.values()]
+    ok, code, message, data = conn.execute(query, values).fetchone()
+    return {"ok": ok, "code": code, "message": message, "data": data}
+
+
+def succeeds(conn, function: str, **params) -> dict:
+    result = call(conn, function, **params)
+    assert result["ok"], f"{function} failed: {result['code']} {result['message']}"
+    return result
+
+
+def row_counts(conn, tables) -> dict:
+    return {t: one(conn, f"SELECT count(*) FROM {t}") for t in tables}
+
+
+def fails_cleanly(conn, code: str, tables, function: str, **params) -> dict:
+    """The plan's failure test: the call returns ok = false with this code, every table it
+    touches has the same row count as before, and error_log holds exactly one new row
+    with that code."""
+    before = row_counts(conn, tables)
+    last_log = one(conn, "SELECT COALESCE(max(log_id), 0) FROM error_log")
+    result = call(conn, function, **params)
+    assert not result["ok"], f"{function} should have failed with {code}"
+    assert result["code"] == code, f"expected {code}, got {result['code']}: {result['message']}"
+    assert row_counts(conn, tables) == before, "a failed call must leave every table unchanged"
+    logs = conn.execute("SELECT function_name, sqlstate FROM error_log WHERE log_id > %s", (last_log,)).fetchall()
+    assert logs == [(function, code)]
+    assert result["data"]["log_id"] > last_log
+    return result
