@@ -109,3 +109,43 @@ def test_r26_a_registration_cannot_vanish_under_a_new_entry(scratch_cfg):
     finally:
         first.close()
         second.close()
+
+
+def test_two_officials_record_the_same_match_at_once(scratch_cfg):
+    """The plan's concurrency test: one call succeeds; the other waits for the match lock,
+    then fails with FN001 and writes nothing but its error_log row."""
+    from psycopg.types.json import Jsonb
+    from conftest import call, new_match
+    from test_functions_matches import series
+
+    with rebuild.connect(scratch_cfg) as setup:
+        cup = new_cup(setup, "Race Cup", teams=2)
+        a, b = cup["teams"]
+        match_id = new_match(setup, cup, [a, b])
+        setup.commit()
+    payload = series(cup, [a, b], [a, a, a])
+
+    first = rebuild.connect(scratch_cfg)
+    second = rebuild.connect(scratch_cfg)
+    outcome = {}
+
+    def second_session():
+        outcome["result"] = call(second, "record_series_result", p_match_id=match_id, p_series=Jsonb(payload))
+        second.commit()
+
+    try:
+        assert call(first, "record_series_result", p_match_id=match_id, p_series=Jsonb(payload))["ok"]
+        worker = threading.Thread(target=second_session)
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive(), "the second call should wait for the first call's lock on the match"
+        first.commit()
+        worker.join(timeout=10)
+        assert outcome["result"]["code"] == "FN001"
+    finally:
+        first.close()
+        second.close()
+
+    with rebuild.connect(scratch_cfg) as check:
+        assert one(check, "SELECT count(*) FROM game WHERE match_id = %s", (match_id,)) == 3
+        assert one(check, "SELECT count(*) FROM error_log WHERE function_name = 'record_series_result'") == 1
