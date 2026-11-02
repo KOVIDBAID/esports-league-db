@@ -1,0 +1,43 @@
+# On every push and pull request: start PostgreSQL 18.6, rebuild the database from the
+# repository, and run the tests. A red cross on GitHub means the schema, the seed data
+# or a function no longer matches the tests.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: esports
+          POSTGRES_PASSWORD: esports_dev
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U esports -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: esports
+      PGPASSWORD: esports_dev
+      PGDATABASE: esports
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Rebuild the database
+        run: python scripts/rebuild.py
+      - name: Run the tests
+        run: python -m pytest

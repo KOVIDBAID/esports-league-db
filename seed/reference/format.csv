@@ -1,0 +1,4 @@
+format_id,format_name,description
+1,Single elimination,"One loss eliminates a team"
+2,Double elimination,"A team is eliminated after its second loss; losers drop to the elimination bracket"
+3,Round robin,"Every team in a group plays every other team once"

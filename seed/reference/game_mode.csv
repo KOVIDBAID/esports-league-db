@@ -1,0 +1,5 @@
+mode_id,mode_name,abbreviation,objective,win_condition
+1,Hardpoint,HP,"Hold the active hill to score points; the hill moves on a timer","First to 250 points, or the higher score when time runs out"
+2,Search & Destroy,S&D,"Attackers plant the bomb at one of two sites while defenders stop or defuse it; one life per round","First to 6 rounds"
+3,Control,CTL,"Attackers capture two zones while defenders hold them, with a shared pool of lives","First to 3 rounds"
+4,Overload,OVR,"Carry the device into the enemy goal to score an overload","More overloads than the opponent at the end of the game"
