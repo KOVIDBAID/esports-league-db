@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+
+# The tests rebuild their database from scratch, so they must never run on the working
+# one (the demo, the app). They use their own database; set TEST_PGDATABASE to change it.
+os.environ["PGDATABASE"] = os.environ.get("TEST_PGDATABASE", "esports_test")
 
 import rebuild  # noqa: E402
 
