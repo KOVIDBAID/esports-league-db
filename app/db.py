@@ -26,3 +26,12 @@ def query(sql, params=None) -> pd.DataFrame:
             if attempt == 2:
                 raise
             conn.clear()  # the saved connection died (database rebuilt); reconnect once
+
+
+def team_name_on(team: str, day: str) -> str:
+    """SQL for the name a team had on a day (its identity then), or its current name if it
+    had none recorded then. Old results show the name the team played under; after a
+    rebrand they keep the old name. `team` and `day` are SQL expressions, never user input."""
+    return (f"COALESCE((SELECT ti.team_name FROM team_identity ti WHERE ti.team_id = {team}"
+            f" AND ti.valid_from <= {day} AND (ti.valid_to IS NULL OR {day} < ti.valid_to)),"
+            f" (SELECT cn.team_name FROM v_team_current_name cn WHERE cn.team_id = {team}))")

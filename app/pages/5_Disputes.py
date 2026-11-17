@@ -68,16 +68,26 @@ else:
     )
     fined = st.selectbox("Fine this team (optional)", match_teams.team_name, key="rs_team")
     fine = st.number_input("Fine amount (USD, 0 = none)", min_value=0, step=1000, key="rs_fine")
+    awarded = st.selectbox("Award the match to (forfeit; only when the dispute is upheld)",
+                           ["No change to the result"] + list(match_teams.team_name), key="rs_awarded")
 
     if st.button("Resolve"):
-        penalties = []
+        penalties, forfeit = [], None
         if fine > 0 and decision == "resolved":
             fined_id = int(match_teams.team_id[match_teams.team_name == fined].iloc[0])
             penalties = [{"penalty_type": "fine", "team_id": fined_id,
                           "fine_amount": int(fine), "reason": resolution}]
+        if awarded != "No change to the result" and decision == "resolved":
+            awarded_id = int(match_teams.team_id[match_teams.team_name == awarded].iloc[0])
+            forfeit = {"awarded_team_id": awarded_id}
         official_id = int(officials.person_id[officials.name == official].iloc[0])
-        show(query(
+        res = query(
             """SELECT * FROM resolve_dispute(p_match_id => %s, p_dispute_number => %s,
-                   p_official_id => %s, p_decision => %s, p_resolution => %s, p_penalties => %s::jsonb)""",
-            (int(d.match_id), int(d.dispute_number), official_id, decision, resolution, json.dumps(penalties)),
-        ))
+                   p_official_id => %s, p_decision => %s, p_resolution => %s, p_penalties => %s::jsonb,
+                   p_forfeit => %s::jsonb)""",
+            (int(d.match_id), int(d.dispute_number), official_id, decision, resolution, json.dumps(penalties),
+             json.dumps(forfeit) if forfeit else None),
+        )
+        show(res)
+        if res.ok[0] and forfeit:
+            st.info("The result changed: the Bracket page shows the teams moved into their new places.")

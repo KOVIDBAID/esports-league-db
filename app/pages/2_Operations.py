@@ -38,9 +38,9 @@ players = query(
 player = st.selectbox("Player", players.gamertag)
 to_team = st.selectbox("To team", teams.team_name, key="tr_to")
 tr_date = st.date_input("Transfer date", key="tr_date")
-role = st.selectbox("Role", ["starter", "substitute"])
+role = st.selectbox("Role", ["starter", "substitute", "two-way"])
 join_type = st.selectbox("Join type", ["signing", "trade", "loan"])
-fee = st.number_input("Transfer fee (USD)", min_value=0, step=10000)
+fee = st.number_input("Transfer fee (USD, 0 = none)", min_value=0, step=10000)
 
 if st.button("Transfer"):
     if players.empty:
@@ -51,5 +51,5 @@ if st.button("Transfer"):
             """SELECT * FROM transfer_player(p_person_id => %s, p_from_team => %s,
                    p_to_team => %s, p_date => %s, p_role => %s, p_join_type => %s, p_fee => %s)""",
             (person_id, int(team_id_of[from_team]), int(team_id_of[to_team]),
-             tr_date, role, join_type, fee),
+             tr_date, role, join_type, fee or None),   # 0 means no fee recorded
         ))
