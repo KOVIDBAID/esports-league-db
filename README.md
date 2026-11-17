@@ -16,7 +16,7 @@ Team: Ishita Kaushik (2024UMA0210), Kovid Baid (2024UMA0214), Saswade Aditya Nac
 | 3. Rules | All 29 rules and 4 participation constraints enforced; 46 triggers ([docs/rules.md](docs/rules.md)) | Done |
 | 4. Functions | All 12 functions, each one transaction with logged errors ([docs/functions.md](docs/functions.md)) | Done |
 | 5. Data | The 2026 CDL teams and players, Major 1 played through the functions, Major 2 ready for the demo ([seed/README.md](seed/README.md)) | Done |
-| 6. Demo | Streamlit app for the live presentation | Next |
+| 6. Demo | Streamlit app for the live presentation: bracket, record series, operations, disputes, team history, standings, error log | In progress |
 
 ## Quick start
 
@@ -41,6 +41,16 @@ python -m pytest                   # all tests should pass
 `rebuild.py` drops and recreates the `esports` database every time, so it is always safe to
 run, and it is the only way the database should change: edit a file in `db/` or `seed/`, then
 rebuild. Never change the database by hand; the next rebuild would undo it.
+
+To run the demo app (it uses the working database, so rebuild first for a clean start):
+
+```bash
+python scripts/rebuild.py
+streamlit run app/Home.py          # opens http://localhost:8501
+```
+
+The Home page lists the demo steps in order. `python scripts/snapshot.py save` and
+`restore` reset the database between rehearsals.
 
 To look inside the database:
 
@@ -80,6 +90,11 @@ tests/
   test_functions_*.py a success test per function and a failure test per guarded rule
   test_concurrency.py two sessions at once: rules 26 and 27, and the same match recorded twice
   test_seed.py        the loaded season: real placements, history, determinism
+  test_app.py         every app page opens, and the demo runs end to end (own database)
+app/
+  Home.py             the Streamlit app's start page, with the demo steps
+  db.py               one shared connection (autocommit: one function call, one transaction)
+  pages/              bracket, record series, operations, disputes, team history, standings, error log
 docs/
   rules.md            each of the 29 business rules: how and when it is enforced, and its tests
   functions.md        the 12 functions: contract, error codes, inputs, rules, demo failures
